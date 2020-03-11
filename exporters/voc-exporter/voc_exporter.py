@@ -33,37 +33,61 @@ def from_json(labeled_data, annotations_output_dir, images_output_dir,
 
     # make sure annotation output directory is valid
     try:
+        annotations_output_dir = annotations_output_dir +'/Annotations'
+        if not os.path.exists(annotations_output_dir):
+            os.makedirs(annotations_output_dir)
+            
         annotations_output_dir = os.path.abspath(annotations_output_dir)
         assert os.path.isdir(annotations_output_dir)
     except AssertionError as exc:
         LOGGER.exception('Annotation output directory does not exist, please create it first.')
         raise exc
+    
+    # make sure segmentation output directory is valid
+    try:
+        segmentation_output_dir = annotations_output_dir +'/../SegmentationClassRaw'
+        segmentation_output_dir = os.path.abspath(segmentation_output_dir)
+        
+        if not os.path.exists(segmentation_output_dir):
+            os.makedirs(segmentation_output_dir)
+            
+
+        assert os.path.isdir(segmentation_output_dir )
+    except AssertionError as exc:
+        LOGGER.exception('Segmentation output directory does not exist, please create it first.')
+        raise exc
 
     # read labelbox JSON output
     with open(labeled_data, 'r') as file_handle:
-        lines = file_handle.readlines()
-        label_data = json.loads(lines[0])
+        # lines = file_handle.readlines()
+        label_data = json.load(file_handle)
 
     for data in label_data:
-        try:
-            write_label(
-                data['ID'],
-                data['Labeled Data'],
-                data['Label'],
-                label_format,
-                images_output_dir,
-                annotations_output_dir)
+        
+        if len(data['Label'])>0:
+                        
+            try:
+                write_label(
+                    data['ID'],
+                    data['Labeled Data'],
+                    data['Label'],
+                    label_format,
+                    images_output_dir,
+                    annotations_output_dir)
 
-        except requests.exceptions.MissingSchema as exc:
-            LOGGER.warning(exc)
-            continue
-        except requests.exceptions.ConnectionError:
-            LOGGER.warning('Failed to fetch image from %s, skipping', data['Labeled Data'])
-            continue
+            except requests.exceptions.MissingSchema as exc:
+                LOGGER.warning(exc)
+                continue
+            except requests.exceptions.ConnectionError:
+                LOGGER.warning('Failed to fetch image from %s, skipping', data['Labeled Data'])
+                continue
 
+        else:
+            LOGGER.warning('no labels, skipping image: {}'.format(data['ID']))
+            continue
 
 def write_label(  # pylint: disable-msg=too-many-arguments
-        label_id: str, image_url: str, labels: Dict[str, Any], label_format: str,
+        label_id: str, image_url: str, labels: Dict[str, Any],label_format: str,
         images_output_dir: str, annotations_output_dir: str):
     """Writes a single Pascal VOC formatted image and label pair to disk.
 
@@ -77,6 +101,7 @@ def write_label(  # pylint: disable-msg=too-many-arguments
                                 annotation files.
         images_output_dir: File path of directory to write images.
     """
+    
     # Download image and save it
     response = requests.get(image_url, stream=True, timeout=10.0)
     response.raw.decode_content = True
@@ -86,6 +111,19 @@ def write_label(  # pylint: disable-msg=too-many-arguments
         '{img_id}.{ext}'.format(img_id=label_id, ext=image.format.lower()))
     image.save(image_fqn, format=image.format)
 
+    # Download mask image and save it
+    if len(labels)>0:
+        mask_url = labels['objects'][-1]['instanceURI']    
+        response = requests.get(mask_url, stream=True, timeout=10.0)
+        response.raw.decode_content = True
+        image = Image.open(response.raw)
+        mask_output_dir = os.path.normpath(os.path.join(images_output_dir,
+                                                       '../SegmentationClassRaw'))
+        mask_image_fqn = os.path.join(
+            mask_output_dir,
+            '{img_id}.{ext}'.format(img_id=label_id, ext=image.format.lower()))
+        image.save(mask_image_fqn, format=image.format)
+    
     # generate image annotation in Pascal VOC
     width, height = image.size
     xml_writer = PascalWriter(image_fqn, width, height)
@@ -138,7 +176,7 @@ def _add_pascal_object_from_xy(xml_writer, polygons, label):
             polygon = polygon['geometry']
         if not isinstance(polygon, list) \
                 or not all(map(lambda p: 'x' in p and 'y' in p, polygon)):
-            LOGGER.warning('Could not get an point list to construct polygon, skipping')
+            LOGGER.warning('Could not get an point list to construct polygon')
             return xml_writer
 
         xy_coords = []
